@@ -62,6 +62,7 @@
 #include "flight/mixer.h"
 #include "flight/pid.h"
 #include "flight/position.h"
+#include "flight/position_control.h"
 #include "flight/alt_hold.h"
 #include "flight/rpm_filter.h"
 #include "flight/servos.h"
@@ -438,11 +439,9 @@ static const char * const lookupTableLaunchControlMode[] = {
 };
 #endif
 
-#ifdef USE_TPA_MODE
 static const char * const lookupTableTpaMode[] = {
     "PD", "D"
 };
-#endif
 
 static const char * const lookupTableSpaMode[] = {
     "OFF", "I_FREEZE", "I", "PID", "PD_I_FREEZE"
@@ -637,9 +636,7 @@ const lookupTableEntry_t lookupTables[] = {
 #ifdef USE_LAUNCH_CONTROL
     LOOKUP_TABLE_ENTRY(lookupTableLaunchControlMode),
 #endif
-#ifdef USE_TPA_MODE
     LOOKUP_TABLE_ENTRY(lookupTableTpaMode),
-#endif
     LOOKUP_TABLE_ENTRY(lookupTableSpaMode),
 #ifdef USE_LED_STRIP
     LOOKUP_TABLE_ENTRY(lookupTableLEDProfile),
@@ -846,6 +843,9 @@ const clivalue_t valueTable[] = {
 #endif
     { "blackbox_disable_debug",     VAR_UINT32 | MASTER_VALUE | MODE_BITSET, .config.bitpos = FLIGHT_LOG_FIELD_SELECT_DEBUG_LOG,   PG_BLACKBOX_CONFIG, offsetof(blackboxConfig_t, fields_disabled_mask) },
     { "blackbox_disable_motors",    VAR_UINT32 | MASTER_VALUE | MODE_BITSET, .config.bitpos = FLIGHT_LOG_FIELD_SELECT_MOTOR,   PG_BLACKBOX_CONFIG, offsetof(blackboxConfig_t, fields_disabled_mask) },
+#ifdef USE_SERVOS
+    { "blackbox_disable_servos",    VAR_UINT32 | MASTER_VALUE | MODE_BITSET, .config.bitpos = FLIGHT_LOG_FIELD_SELECT_SERVO,   PG_BLACKBOX_CONFIG, offsetof(blackboxConfig_t, fields_disabled_mask) },
+#endif
 #ifdef USE_DSHOT_TELEMETRY
     { "blackbox_disable_rpm",       VAR_UINT32 | MASTER_VALUE | MODE_BITSET, .config.bitpos = FLIGHT_LOG_FIELD_SELECT_RPM,   PG_BLACKBOX_CONFIG, offsetof(blackboxConfig_t, fields_disabled_mask) },
 #endif
@@ -857,12 +857,11 @@ const clivalue_t valueTable[] = {
 #endif
 
 // PG_MOTOR_CONFIG
-    { "min_throttle",               VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { PWM_PULSE_MIN, PWM_PULSE_MAX }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, minthrottle) },
     { "max_throttle",               VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { PWM_PULSE_MIN, PWM_PULSE_MAX }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, maxthrottle) },
     { "min_command",                VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { PWM_PULSE_MIN, PWM_PULSE_MAX }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, mincommand) },
     { "motor_kv",                   VAR_UINT16 | HARDWARE_VALUE, .config.minmaxUnsigned = { 1, 40000 },                   PG_MOTOR_CONFIG, offsetof(motorConfig_t, kv) },
+    { PARAM_NAME_MOTOR_IDLE, VAR_UINT16  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 2000 },                            PG_MOTOR_CONFIG, offsetof(motorConfig_t, motorIdle) },
 #ifdef USE_DSHOT
-    { PARAM_NAME_DSHOT_IDLE_VALUE,  VAR_UINT16  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 2000 }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, digitalIdleOffsetValue) },
 #ifdef USE_DSHOT_DMAR
     { "dshot_burst",                VAR_UINT8  | HARDWARE_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON_AUTO }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.useBurstDshot) },
 #endif
@@ -874,7 +873,7 @@ const clivalue_t valueTable[] = {
     { "dshot_bitbang",               VAR_UINT8  | HARDWARE_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON_AUTO }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.useDshotBitbang) },
     { "dshot_bitbang_timer",         VAR_UINT8  | HARDWARE_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_DSHOT_BITBANGED_TIMER }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.useDshotBitbangedTimer) },
 #endif
-#endif
+#endif // USE_DSHOT
     { PARAM_NAME_USE_UNSYNCED_PWM,  VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.useUnsyncedPwm) },
     { PARAM_NAME_MOTOR_PWM_PROTOCOL, VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_MOTOR_PWM_PROTOCOL }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.motorPwmProtocol) },
     { PARAM_NAME_MOTOR_PWM_RATE,    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 200, 32000 }, PG_MOTOR_CONFIG, offsetof(motorConfig_t, dev.motorPwmRate) },
@@ -962,7 +961,7 @@ const clivalue_t valueTable[] = {
     { "yaw_motors_reversed",        VAR_INT8   | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, yaw_motors_reversed) },
     { PARAM_NAME_MIXER_TYPE,        VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_MIXER_TYPE }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, mixer_type) },
     { "crashflip_motor_percent",    VAR_UINT8 |  MASTER_VALUE,  .config.minmaxUnsigned = { 0, 100 }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, crashflip_motor_percent) },
-    { "crashflip_expo",             VAR_UINT8 |  MASTER_VALUE,  .config.minmaxUnsigned = { 0, 100 }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, crashflip_expo) },
+    { "crashflip_rate",             VAR_UINT8 |  MASTER_VALUE,  .config.minmaxUnsigned = { 0, 250 }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, crashflip_rate) },
 #ifdef USE_RPM_LIMIT
     { "rpm_limit",                  VAR_INT8   |  MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_MIXER_CONFIG, offsetof(mixerConfig_t, rpm_limit) },
     { "rpm_limit_p",                VAR_UINT16 |  MASTER_VALUE,  .config.minmaxUnsigned = { 0, 100 },        PG_MIXER_CONFIG, offsetof(mixerConfig_t, rpm_limit_p) },
@@ -1070,9 +1069,6 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_GPS_RESCUE_MIN_SATS,        VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 5, 50 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, minSats) },
     { PARAM_NAME_GPS_RESCUE_ALLOW_ARMING_WITHOUT_FIX, VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, allowArmingWithoutFix) },
 
-    { PARAM_NAME_GPS_RESCUE_THROTTLE_P,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, throttleP) },
-    { PARAM_NAME_GPS_RESCUE_THROTTLE_I,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, throttleI) },
-    { PARAM_NAME_GPS_RESCUE_THROTTLE_D,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, throttleD) },
     { PARAM_NAME_GPS_RESCUE_VELOCITY_P,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, velP) },
     { PARAM_NAME_GPS_RESCUE_VELOCITY_I,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, velI) },
     { PARAM_NAME_GPS_RESCUE_VELOCITY_D,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_GPS_RESCUE, offsetof(gpsRescueConfig_t, velD) },
@@ -1097,10 +1093,6 @@ const clivalue_t valueTable[] = {
     { "yaw_control_reversed",       VAR_INT8   | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, yaw_control_reversed) },
 
 #ifdef USE_ALT_HOLD_MODE
-    { PARAM_NAME_ALT_HOLD_P, VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_pid_p) },
-    { PARAM_NAME_ALT_HOLD_I, VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_pid_i) },
-    { PARAM_NAME_ALT_HOLD_D, VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_pid_d) },
-
     { PARAM_NAME_ALT_HOLD_THROTTLE_MIN,    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1050, 1400 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_throttle_min) },
     { PARAM_NAME_ALT_HOLD_THROTTLE_MAX,    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1400, 2000 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_throttle_max) },
     { PARAM_NAME_ALT_HOLD_TARGET_ADJUST_RATE,    VAR_UINT8 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_ALTHOLD_CONFIG, offsetof(altholdConfig_t, alt_hold_target_adjust_rate) },
@@ -1278,9 +1270,7 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_SIMPLIFIED_GYRO_FILTER,             VAR_UINT8 | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_GYRO_CONFIG, offsetof(gyroConfig_t, simplified_gyro_filter) },
     { PARAM_NAME_SIMPLIFIED_GYRO_FILTER_MULTIPLIER,  VAR_UINT8 | MASTER_VALUE, .config.minmaxUnsigned = { SIMPLIFIED_TUNING_FILTERS_MIN, SIMPLIFIED_TUNING_MAX }, PG_GYRO_CONFIG, offsetof(gyroConfig_t, simplified_gyro_filter_multiplier) },
 #endif
-#ifdef USE_TPA_MODE
     { PARAM_NAME_TPA_MODE,             VAR_UINT8  | PROFILE_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_TPA_MODE }, PG_PID_PROFILE, offsetof(pidProfile_t, tpa_mode) },
-#endif
     { PARAM_NAME_TPA_RATE,          VAR_UINT8  | PROFILE_VALUE, .config.minmaxUnsigned = { 0, TPA_MAX}, PG_PID_PROFILE, offsetof(pidProfile_t, tpa_rate) },
     { PARAM_NAME_TPA_BREAKPOINT,    VAR_UINT16 | PROFILE_VALUE, .config.minmaxUnsigned = { PWM_RANGE_MIN, PWM_RANGE_MAX }, PG_PID_PROFILE, offsetof(pidProfile_t, tpa_breakpoint) },
     { PARAM_NAME_TPA_LOW_RATE,            VAR_INT8  | PROFILE_VALUE, .config.minmax = { TPA_LOW_RATE_MIN, TPA_MAX }, PG_PID_PROFILE, offsetof(pidProfile_t, tpa_low_rate) },
@@ -1829,8 +1819,14 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_ALTITUDE_PREFER_BARO,  VAR_INT8   | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 }, PG_POSITION, offsetof(positionConfig_t, altitude_prefer_baro) },
     { PARAM_NAME_ALTITUDE_LPF,          VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 10, 1000 }, PG_POSITION, offsetof(positionConfig_t, altitude_lpf) },
     { PARAM_NAME_ALTITUDE_D_LPF,        VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 10, 1000 }, PG_POSITION, offsetof(positionConfig_t, altitude_d_lpf) },
-    { PARAM_NAME_HOVER_THROTTLE,        VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1100, 1700 }, PG_POSITION, offsetof(positionConfig_t, hover_throttle) },
-    { PARAM_NAME_LANDING_ALTITUDE,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION, offsetof(positionConfig_t, landing_altitude_m) },
+
+// PG_POSITION_CONTROL
+    { PARAM_NAME_HOVER_THROTTLE,        VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1100, 1700 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, hover_throttle) },
+    { PARAM_NAME_LANDING_ALTITUDE,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, landing_altitude_m) },
+    { PARAM_NAME_ALTITUDE_P,            VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, altitude_P) },
+    { PARAM_NAME_ALTITUDE_I,            VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, altitude_I) },
+    { PARAM_NAME_ALTITUDE_D,            VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, altitude_D) },
+    { PARAM_NAME_ALTITUDE_F,            VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 200 }, PG_POSITION_CONTROL, offsetof(positionControlConfig_t, altitude_F) },
 
 // PG_MODE_ACTIVATION_CONFIG
 #if defined(USE_CUSTOM_BOX_NAMES)

@@ -50,7 +50,7 @@
 #include "flight/gps_rescue.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
-#include "flight/position.h"
+#include "flight/position_control.h"
 #include "flight/rpm_filter.h"
 
 #include "io/gps.h"
@@ -321,7 +321,7 @@ float getTpaFactorClassic(float tpaArgument)
     return 1.0f - tpaRate;
 }
 
-void pidUpdateTpaFactor(float throttle, const pidProfile_t *pidProfile)
+void pidUpdateTpaFactor(float throttle)
 {
     // don't permit throttle > 1 & throttle < 0 ? is this needed ? can throttle be > 1 or < 0 at this point
     throttle = constrainf(throttle, 0.0f, 1.0f);
@@ -334,7 +334,7 @@ void pidUpdateTpaFactor(float throttle, const pidProfile_t *pidProfile)
 #endif
 
 #ifdef USE_ADVANCED_TPA
-    switch (pidProfile->tpa_curve_type) {
+    switch (pidRuntime.tpaCurveType) {
     case TPA_CURVE_HYPERBOLIC:
         tpaFactor = pwlInterpolate(&pidRuntime.tpaCurvePwl, tpaArgument);
         break;
@@ -343,7 +343,6 @@ void pidUpdateTpaFactor(float throttle, const pidProfile_t *pidProfile)
         tpaFactor = getTpaFactorClassic(tpaArgument);
     }
 #else
-    UNUSED(pidProfile);
     tpaFactor = getTpaFactorClassic(tpaArgument);
 #endif
 
@@ -816,7 +815,7 @@ static FAST_CODE_NOINLINE void disarmOnImpact(void)
         // for more reliable disarm with gentle controlled landings
         float lowAltitudeSensitivity = 1.0f;
 #ifdef USE_ALT_HOLD_MODE
-        lowAltitudeSensitivity = (FLIGHT_MODE(ALT_HOLD_MODE) && isAltitudeLow()) ? 1.5f : 1.0f;
+        lowAltitudeSensitivity = (FLIGHT_MODE(ALT_HOLD_MODE) && isBelowLandingAltitude()) ? 1.5f : 1.0f;
 #endif
         // and disarm if accelerometer jerk exceeds threshold...
         if ((fabsf(acc.accDelta) * lowAltitudeSensitivity) > pidRuntime.landingDisarmThreshold) {
@@ -945,11 +944,7 @@ void FAST_CODE pidController(const pidProfile_t *pidProfile, timeUs_t currentTim
 
     calculateSpaValues(pidProfile);
 
-#ifdef USE_TPA_MODE
     const float tpaFactorKp = (pidProfile->tpa_mode == TPA_MODE_PD) ? pidRuntime.tpaFactor : 1.0f;
-#else
-    const float tpaFactorKp = pidRuntime.tpaFactor;
-#endif
 
 #ifdef USE_YAW_SPIN_RECOVERY
     const bool yawSpinActive = gyroYawSpinDetected();
@@ -1200,26 +1195,28 @@ void FAST_CODE pidController(const pidProfile_t *pidProfile, timeUs_t currentTim
 #endif
 
 #ifdef USE_D_MAX
-            float dMaxFactor = 1.0f;
-            if (pidRuntime.dMaxPercent[axis] > 0) {
+            float dMaxMultiplier = 1.0f;
+            if (pidRuntime.dMaxPercent[axis] > 1.0f) {
                 float dMaxGyroFactor = pt2FilterApply(&pidRuntime.dMaxRange[axis], delta);
                 dMaxGyroFactor = fabsf(dMaxGyroFactor) * pidRuntime.dMaxGyroGain;
                 const float dMaxSetpointFactor = fabsf(pidSetpointDelta) * pidRuntime.dMaxSetpointGain;
-                dMaxFactor = MAX(dMaxGyroFactor, dMaxSetpointFactor);
-                dMaxFactor = 1.0f + (1.0f - pidRuntime.dMaxPercent[axis]) * dMaxFactor;
-                dMaxFactor = pt2FilterApply(&pidRuntime.dMaxLowpass[axis], dMaxFactor);
-                dMaxFactor = MIN(dMaxFactor, 1.0f / pidRuntime.dMaxPercent[axis]);
+                const float dMaxBoost = fmaxf(dMaxGyroFactor, dMaxSetpointFactor);
+                // dMaxBoost starts at zero, and by 1.0 we get Dmax, but it can exceed 1.
+                dMaxMultiplier += (pidRuntime.dMaxPercent[axis] - 1.0f) * dMaxBoost;
+                dMaxMultiplier = pt2FilterApply(&pidRuntime.dMaxLowpass[axis], dMaxMultiplier);
+                // limit the gain to the fraction that DMax is greater than Min
+                dMaxMultiplier = MIN(dMaxMultiplier, pidRuntime.dMaxPercent[axis]);
                 if (axis == FD_ROLL) {
                     DEBUG_SET(DEBUG_D_MAX, 0, lrintf(dMaxGyroFactor * 100));
                     DEBUG_SET(DEBUG_D_MAX, 1, lrintf(dMaxSetpointFactor * 100));
-                    DEBUG_SET(DEBUG_D_MAX, 2, lrintf(pidRuntime.pidCoefficient[axis].Kd * dMaxFactor * 10 / DTERM_SCALE));
+                    DEBUG_SET(DEBUG_D_MAX, 2, lrintf(pidRuntime.pidCoefficient[axis].Kd * dMaxMultiplier * 10 / DTERM_SCALE)); // actual D
                 } else if (axis == FD_PITCH) {
-                    DEBUG_SET(DEBUG_D_MAX, 3, lrintf(pidRuntime.pidCoefficient[axis].Kd * dMaxFactor * 10 / DTERM_SCALE));
+                    DEBUG_SET(DEBUG_D_MAX, 3, lrintf(pidRuntime.pidCoefficient[axis].Kd * dMaxMultiplier * 10 / DTERM_SCALE));
                 }
             }
 
-            // Apply the dMaxFactor
-            preTpaD *= dMaxFactor;
+            // Apply the gain that increases D towards Dmax
+            preTpaD *= dMaxMultiplier;
 #endif
 
             pidData[axis].D = preTpaD * pidRuntime.tpaFactor;
